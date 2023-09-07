@@ -1,0 +1,462 @@
+--// Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+
+--// Variables
+local localPlayer = Players.LocalPlayer
+local mouse = localPlayer:GetMouse()
+local mainHandler = nil
+local sitting = false
+local killcount = 0
+local esp = 0
+local ignore = {}
+
+--// Functions
+function spawnItem(itemName, slot)
+    local inventory = getupvalue(mainHandler.start_dual_wield, 3)
+    local function spawn(use)
+        if inventory[slot][1] ~= itemName then
+            if workspace.InteractablesNoDel:FindFirstChild("Personal Workbench") ~= nil then
+                repeat
+                    ReplicatedStorage.Interactables.interaction:FireServer(workspace.InteractablesNoDel["Personal Workbench"], "buybaseupgrade", _G.serverKey)
+                    RunService.Heartbeat:Wait()
+                until workspace.InteractablesNoDel:FindFirstChild("Workbench") ~= nil
+            end
+
+            local workbench = workspace.InteractablesNoDel:FindFirstChild("Workbench") or workspace.Interactables:FindFirstChild("Workbench")
+
+            ReplicatedStorage.Interactables.interaction:FireServer(workbench, "workbenchblueprint" .. itemName, _G.playerKey)
+            repeat RunService.Heartbeat:Wait() until workbench.stats.blueprint.Value == itemName
+
+            ReplicatedStorage.Interactables.interaction:FireServer(workbench, "workbench", _G.playerKey)
+
+            local self = nil
+            self = workspace.WeaponDrops.ChildAdded:Connect(function(item)
+                if item.Name == itemName and (item:GetPivot().Position - workbench:GetPivot().Position).Magnitude <= 20 then
+                    if inventory[slot][1] ~= "Fist" then
+                        inventory[slot] = {"Fist", false, nil}
+                    end
+
+                    local lastPosition = localPlayer.Character:GetPivot()
+                    repeat
+                        localPlayer.Character:PivotTo(item:GetPivot())
+                        workspace.ServerStuff.claimItem:InvokeServer(item)
+
+                        RunService.Heartbeat:Wait()
+                    until localPlayer.Character.valids:FindFirstChild(itemName) ~= nil
+
+                    local animSet = nil
+                    for _, v in pairs(ReplicatedStorage.animationSets:GetDescendants()) do
+                        if v.Name == require(workspace.ServerStuff.Statistics.W_STATISTICS)[itemName].animset then
+                            animSet = v
+                        end
+                    end
+
+                    repeat
+                        workspace.ServerStuff.getTPWeapon:FireServer(itemName, animSet, "Fist", item, false)
+                        RunService.Heartbeat:Wait()
+                    until workspace.WeaponDrops:FindFirstChild(item) == nil
+
+                    localPlayer.Character:PivotTo(lastPosition)
+                    inventory[slot] = {itemName, false, use}
+
+                    self:Disconnect(); self = nil
+                end
+            end)
+        end
+    end
+
+    for index, value in pairs(require(workspace.ServerStuff.Statistics.W_STATISTICS)) do
+        if string.match(string.lower(index), string.lower(itemName)) ~= nil then
+            itemName = index
+
+            local use = nil
+            if value.weapontype == "Item" or value.weapontype == "Bow" or value.weapontype == "Gun" then
+                if ReplicatedStorage.Weapons:FindFirstChild(index) then
+                    use = ReplicatedStorage.Weapons[index].ammo.Value
+                end
+
+                if slot == nil then
+                    for inventorySlot, content in pairs(inventory) do
+                        if inventorySlot ~= 1 and content[1] == "Fist" then
+                            slot = inventorySlot
+                            break
+                        end
+                    end
+                end
+            end
+
+            if localPlayer.Character.valids:FindFirstChild(itemName) ~= nil then
+                inventory[slot] = {itemName, false, use}
+            else
+                spawn(use)
+            end
+
+            repeat RunService.Heartbeat:Wait() until inventory[slot][1] == itemName and localPlayer.PlayerGui.mainHUD:FindFirstChild("InventoryFrame") ~= nil
+            mainHandler.invmanage("updatehud")
+
+            break
+        end
+    end
+end
+
+function damage(character)
+    local changeToRevolver = coroutine.create(function()
+        local originalPerk = localPlayer.Character:FindFirstChild("current_perk").Value
+        if originalPerk ~= nil and originalPerk ~= "revolver" then
+            workspace.ServerStuff.changeStats:InvokeServer("changeclass", "revolver")
+            coroutine.yield()
+            workspace.ServerStuff.changeStats:InvokeServer("changeclass", originalPerk)
+        end
+    end)
+    coroutine.resume(changeToRevolver)
+
+    local activestat = require(workspace.ServerStuff.Statistics.CLASS_STATISTICS).revolver.activestats
+    activestat._revolver_damage = activestat.revolver_damage
+    activestat._revolver_headshot_multi = activestat.revolver_headshot_multi
+    activestat.revolver_damage = 750
+    activestat.revolver_headshot_multi = 0
+
+    workspace.ServerStuff.dealDamage:FireServer("revolver_shot", { character, 750 }, _G.serverKey, _G.playerKey)
+    coroutine.resume(changeToRevolver)
+
+    activestat.revolver_damage = 750
+    activestat.revolver_headshot_multi = 0
+end
+
+function addToIgnore(instance)
+    if table.find(ignore, instance) == nil then
+        table.insert(ignore, instance)
+        instance.Destroying:Connect(function()
+            table.remove(ignore, table.find(ignore, instance))
+        end)
+    end
+end
+
+function shoot()
+    local _table = {
+        ["characterInMouse"] = {},
+        ["loopFinished"] = false
+    }
+
+    addToIgnore(localPlayer.Character)
+
+    local function raycast(origin)
+        local param = RaycastParams.new()
+        param.FilterDescendantsInstances = ignore
+        param.FilterType = Enum.RaycastFilterType.Blacklist
+
+        local result = workspace:Raycast(origin, mouse.Hit.LookVector * 10000, param)
+        if result ~= nil then
+            local ancestor = result.Instance
+            while ancestor ~= nil and ancestor.Parent ~= workspace do
+                if ancestor.Name == "Barrel" then
+                    workspace.ServerStuff.detBarrel:FireServer(ancestor)
+                end
+
+                if ancestor:FindFirstChildOfClass("Humanoid") then
+                    if table.find(_table.characterInMouse, ancestor) == nil then
+                        table.insert(_table.characterInMouse, ancestor)
+                    end
+                    break
+                end
+
+                ancestor = ancestor.Parent
+            end
+
+            addToIgnore(result.Instance)
+
+            if result.Instance.Transparency ~= 1 then
+                local fourthArgument = nil
+                if ancestor ~= nil and ancestor:FindFirstChildOfClass("Humanoid") then
+                    fourthArgument = ancestor
+                end
+
+                workspace.ServerStuff.applyGore:FireServer("firegun", localPlayer.Character, localPlayer, {origin, result.Position, true, fourthArgument, true})
+            end
+            raycast(result.Position)
+        else
+            _table.loopFinished = true
+        end
+    end
+    coroutine.wrap(raycast)(workspace.CurrentCamera.CFrame.Position)
+
+    repeat RunService.Heartbeat:Wait() until _table.loopFinished == true
+    for _, character in ipairs(_table.characterInMouse) do
+        coroutine.wrap(damage)(character)
+    end
+
+    ceo = false
+end
+
+function randomInstance(path: Instance)
+    return path:GetChildren()[math.random(1, #path:GetChildren())].Name
+end
+
+function talk(path: table, name: string)
+    workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio1", workspace)
+    workspace:WaitForChild("radio1").Ended:Wait()
+
+    workspace.ServerStuff.playAudio:FireServer(path, name, workspace)
+    workspace:WaitForChild(name).Ended:Wait()
+
+    workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio2", workspace)
+    workspace:WaitForChild("radio2").Ended:Wait()
+end
+
+function notify(title, text, icon, duration)
+    StarterGui:SetCore("SendNotification", {
+        Title = title or "N/A",
+        Text = text or "N/A",
+        Icon = icon or "rbxassetid://6026568227",
+        duration = duration or 3
+    })
+end
+
+function initialize()
+    notify("Loading", "retrieving security keys")
+
+    local _mainHandler = false
+    while _mainHandler == false do
+        for _, instance in pairs(localPlayer.Backpack:GetChildren()) do
+            if instance:IsA("LocalScript") and instance.Name ~= "ClickDetectorScript" then
+                repeat
+                    mainHandler = getsenv(instance)
+                    RunService.Heartbeat:Wait()
+                until mainHandler.afflictstatus ~= nil
+
+                for index, upvalue in ipairs(getupvalues(mainHandler.afflictstatus)) do
+                    if _G.serverKey == nil then
+                        if typeof(upvalue) == "number" then
+                            for _, key in pairs(getrenv()._G) do
+                                if upvalue == key then
+                                    _G.serverKey = upvalue
+                                end
+                            end
+                        end
+                    end
+
+                    if upvalue == _G.serverKey then
+                        _G.playerKey = getupvalue(mainHandler.afflictstatus, index + 1)
+                        break
+                    end
+                end
+
+                _mainHandler = true
+            end
+        end
+
+        RunService.Heartbeat:Wait()
+    end
+
+    notify("Loading", "spawning weapon")
+    spawnItem("SUPSniper", 1)
+
+    getupvalues(mainHandler.unloadgun)[7].Long = math.huge
+
+    coroutine.wrap(function()
+        local arrive, quip, _end = randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.arrive), randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.quip), randomInstance(ReplicatedStorage.soundLibrary.voices.ilija["end"])
+        workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio1", workspace)
+        workspace:WaitForChild("radio1").Ended:Wait()
+
+        workspace.ServerStuff.playAudio:FireServer({"voices", "ilija", "arrive"}, arrive, workspace)
+        workspace:WaitForChild(arrive).Ended:Wait()
+
+        task.delay(1, function()
+            workspace.ServerStuff.playAudio:FireServer({"voices", "ilija", "quip"}, quip, workspace)
+        end)
+        workspace:WaitForChild(quip).Ended:Wait()
+
+        task.delay(1, function()
+            workspace.ServerStuff.playAudio:FireServer({"voices", "ilija", "end"}, _end, workspace)
+        end)
+        workspace:WaitForChild(_end).Ended:Wait()
+
+        workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio2", workspace)
+    end)()
+
+    for index, status in pairs(getupvalue(mainHandler.afflictstatus, 1)) do
+        if string.match(index, "Virus") ~= nil then
+            status.effects.currentduration = math.huge
+        end
+    end
+
+    localPlayer.Character.Humanoid.Died:Connect(function()
+        killcount = 0
+
+        local animation = localPlayer.Character.Humanoid.Animator:LoadAnimation(ReplicatedStorage.animationSets.TPanimSets.global.selfed)
+        animation.Priority = Enum.AnimationPriority.Action
+        animation:Play()
+
+        workspace.ServerStuff.playAudio:FireServer({ "soldiers" }, "defeat", localPlayer.Character)
+    end)
+end
+
+--// Setup
+if workspace.activePlayers:FindFirstChild(localPlayer.Name) == nil then
+    notify("Error", "please enter the game before executing this script")
+    return
+end
+
+initialize()
+localPlayer.PlayerGui.ChildAdded:Connect(function(instance)
+    if instance.Name == "mainHUD" then
+        initialize()
+    end
+end)
+
+local animation = nil
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if gameProcessedEvent == true then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.V then
+        if sitting == false then
+            localPlayer.Character.HumanoidRootPart.Anchored = true
+
+            animation = game.Players.LocalPlayer.Character.Humanoid.Animator:LoadAnimation(ReplicatedStorage.animationSets.TPanimSets.special.ilija_rest)
+            animation.Priority = Enum.AnimationPriority.Action
+            animation:Play()
+            sitting = true
+        else
+            animation:Stop()
+            localPlayer.Character.HumanoidRootPart.Anchored = false
+            sitting = false
+        end
+    end
+
+    if input.KeyCode == Enum.KeyCode.P then
+        esp += 1
+        if esp >= 3 then
+            esp = 0
+        end
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if localPlayer.Character:FindFirstChild("Head") ~= nil and localPlayer.Character.Head:FindFirstChild("playeroverhead") ~= nil then
+        localPlayer.Character.Head.playeroverhead:Destroy()
+    end
+
+    if mainHandler ~= nil and mainHandler.afflictstatus ~= nil then
+        local status = getupvalue(mainHandler.afflictstatus, 1)
+        if status.Toxins ~= nil then
+            coroutine.wrap(function()
+                for _, instance in ipairs(workspace.CurrentCamera:GetChildren()) do
+                    if instance.Name == "sickcc" or instance.Name == "stormfx_overlay" then
+                        instance:Destroy()
+                    end
+                end
+            end)()
+
+            if localPlayer.Character:FindFirstChild("storm_ambience") then
+                localPlayer.Character.storm_ambience:Destroy()
+            end
+
+            Lighting.FogEnd = math.huge
+        end
+
+        if status.Stealth == nil then
+            status.Stealth = {
+                effects = {
+                    corename = "Stealth",
+                    maxduration = math.huge,
+                    currentduration = math.huge,
+                },
+                mainstats = {
+                    intensity = 1,
+                }
+            }
+        end
+    end
+end)
+
+local namecall = nil
+namecall = hookfunction(getrawmetatable(game).__namecall, newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    if method == "FireServer" then
+        if self.Name == "dealDamage" then
+            if typeof(args[1]) == "table" and args[1][1] == "gundamage" then
+                local character = args[1][2]
+                if args[1][5] == "SUPSniper" and character ~= nil then
+                    local humanoid = character:FindFirstChildOfClass("Humanoid")
+                    if humanoid.Health - 150 <= 0 or humanoid.Health <= 0 then
+                        coroutine.wrap(function()
+                            killcount += 1
+                            if killcount - (math.modf(killcount / 4) * 4) == 0 then
+                                talk({"voices", "ilija", "shot"}, randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.shot))
+                            end
+
+                            if killcount == 1 then
+                                talk({"voices", "ilija", "onefrag"}, randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.onefrag))
+                            elseif killcount == 10 then
+                                talk({"voices", "ilija", "tenfrag"}, randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.tenfrag))
+                            elseif killcount == 20 then
+                                talk({"voices", "ilija", "twentyfrag"}, randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.twentyfrag))
+                            end
+                        end)()
+                    end
+                end
+            end
+
+            if args[1] == "toxicdead" or args[1] == "toxicated" then
+                return true
+            end
+        end
+
+        if self.Name == "applyGore" then
+            if args[1] == "firegun" then
+                if typeof(args[4]) == "table" and args[4][6] == 145 and getupvalue(mainHandler.start_dual_wield, 3)[1][2] == true then
+                    workspace.ServerStuff.applyGore:FireServer("lazarus_laser", localPlayer, localPlayer.Character, {args[4][2], args[4][2]})
+                    coroutine.wrap(function()
+                        local fx = workspace.NoTarget:WaitForChild("laztrail")
+                        if fx ~= nil then
+                            workspace.ServerStuff.playAudio:FireServer({"general"}, "ceobullet", fx)
+                        end
+                    end)()
+                end
+            end
+
+            if args[1] == "muzzle_flash" then
+                if typeof(args[4]) == "table" and args[4][3] == 145 and getupvalue(mainHandler.start_dual_wield, 3)[1][2] == true then
+                    coroutine.wrap(shoot)()
+                end
+            end
+        end
+
+        if self.Name == "playAudio" and typeof(args[1]) == "table" and args[1][1] == "reloads" then
+            if args[2] == "rifle_start" then
+                coroutine.wrap(talk)({"voices", "ilija", "reload"}, randomInstance(ReplicatedStorage.soundLibrary.voices.ilija.reload))
+            end
+        end
+
+        if self.Name == "callEvent" and args[1] == "lel" then
+            return true
+        end
+
+        if self.Name == "SayMessageRequest" and args[2] == "All" then
+            coroutine.wrap(function()
+                workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio1", workspace)
+                workspace:WaitForChild("radio1").Ended:Wait()
+
+                workspace.ServerStuff.applyGore:FireServer("player_ping", nil, nil, { localPlayer.Character:GetPivot().Position + Vector3.new(0, 2, 0), args[1], 0 })
+
+                workspace.ServerStuff.playAudio:FireServer({"general_ui"}, "radio2", workspace)
+                workspace:WaitForChild("radio2").Ended:Wait()
+            end)()
+
+            return true
+        end
+    end
+
+    return namecall(self, ...)
+end))
+
+notify("Loading", "you are a Sniper now!")
